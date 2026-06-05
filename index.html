@@ -45,8 +45,8 @@ function NumStepper({ value, set, min = 0, step = 1 }) {
 }
 
 function CalcSheet() {
-  const [numM, setNumM] = useState(1);
-  const [numA, setNumA] = useState(0);
+  const [guestMode, setGuestMode] = useState("남");
+  const [numGuest, setNumGuest] = useState(1);
   const [bottles, setBottles] = useState(0);
   const [bottlePrice, setBottlePrice] = useState("");
   const [tcOn, setTcOn] = useState("");
@@ -89,15 +89,15 @@ function CalcSheet() {
   const rmI = (id) => setItems((a) => a.filter((it) => it.id !== id));
 
   const billText = useMemo(() => {
-    const L = [`[계산서]  남 ${numM} · 아베크 ${numA}`, "──────────────"];
+    const L = [`[계산서]  ${guestMode} ${numGuest}`, "──────────────"];
     if (bottles > 0) L.push(`술  ${won(bottlePrice)} × ${bottles}병  =  ${won(liquorAmt)}`);
     helpers.forEach((h) => { if (h.name || Number(h.time)) L.push(`${h.name || "도우미"}  ${f1(Number(h.time) || 0)}타임${h.nom ? " 지명" : ""}  ${won(calcTc(h, onP, offP).amt)}`); });
-    if (numA > 0) mHelpers.forEach((h) => { if (h.name || Number(h.time)) L.push(`(선수) ${h.name || "도우미"}  ${f1(Number(h.time) || 0)}타임${h.nom ? " 지명" : ""}  ${won(calcTc(h, mOnP, mOffP).amt)}`); });
+    if (guestMode === "아베크") mHelpers.forEach((h) => { if (h.name || Number(h.time)) L.push(`(선수) ${h.name || "도우미"}  ${f1(Number(h.time) || 0)}타임${h.nom ? " 지명" : ""}  ${won(calcTc(h, mOnP, mOffP).amt)}`); });
     items.forEach((it) => { if (it.name || Number(it.amount)) L.push(`${it.name || "항목"}  ${it.discount ? "-" : ""}${won(it.amount)}`); });
     if (sipMemo.trim()) L.push(`사입내역) ${sipMemo.trim()}`);
     L.push("──────────────", `합계   ${won(total)}`);
     return L.join("\n");
-  }, [numM, numA, bottles, bottlePrice, liquorAmt, helpers, mHelpers, tcOn, tcOff, mTcOn, mTcOff, items, sipMemo, total, splitMode]);
+  }, [guestMode, numGuest, bottles, bottlePrice, liquorAmt, helpers, mHelpers, tcOn, tcOff, mTcOn, mTcOff, items, sipMemo, total, splitMode]);
 
   const copy = async () => {
     try { await navigator.clipboard.writeText(billText); }
@@ -150,15 +150,15 @@ function CalcSheet() {
           <p className="text-xs text-zinc-500 mt-1">{new Date().toLocaleDateString("ko-KR", { month: "long", day: "numeric", weekday: "short" })} · 단위 만원</p>
         </div>
 
-        <div className="flex gap-3 mb-3">
-          <div className="flex-1 flex items-center justify-between bg-zinc-900/60 border border-zinc-800 rounded-xl px-3 py-2">
-            <span className="flex items-center gap-1.5 text-sm text-zinc-400"><Users size={15} />남</span>
-            <NumStepper value={numM} set={setNumM} min={0} step={1} />
+        <div className="flex items-center justify-between bg-zinc-900/60 border border-zinc-800 rounded-xl px-3 py-2 mb-3">
+          <div className="flex items-center gap-2">
+            <Users size={15} />
+            <div className="flex rounded-lg overflow-hidden border border-zinc-700">
+              <button onClick={() => setGuestMode("남")} className={"px-3 py-1.5 text-xs " + (guestMode === "남" ? "bg-amber-500 text-zinc-950" : "text-zinc-400")}>남</button>
+              <button onClick={() => setGuestMode("아베크")} className={"px-3 py-1.5 text-xs " + (guestMode === "아베크" ? "bg-sky-500 text-white" : "text-zinc-400")}>아베크</button>
+            </div>
           </div>
-          <div className="flex-1 flex items-center justify-between bg-zinc-900/60 border border-zinc-800 rounded-xl px-3 py-2">
-            <span className="text-sm text-zinc-400">아베크</span>
-            <NumStepper value={numA} set={setNumA} min={0} step={1} />
-          </div>
+          <NumStepper value={numGuest} set={setNumGuest} min={1} step={1} />
         </div>
 
         <div className={card + " mb-3"}>
@@ -201,7 +201,7 @@ function CalcSheet() {
           <div className="text-right mt-2 text-sm"><span className="text-zinc-500">티씨 합계 </span><span className="font-semibold text-zinc-100">{won(tcTotal)}</span></div>
         </div>
 
-        {numA > 0 && (
+        {guestMode === "아베크" && (
           <div className={card + " mb-3"}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-medium text-zinc-100">선수 단가 <span className="text-[10px] text-sky-300">남</span></span>
