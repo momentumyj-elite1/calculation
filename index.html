@@ -24,7 +24,7 @@ const Svg = ({ size = 16, children }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>
 );
 const Plus = (p) => <Svg {...p}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Svg>;
-const Trash = (p) => <Svg {...p}><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></Svg>;
+const Trash2 = (p) => <Svg {...p}><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></Svg>;
 const Copy = (p) => <Svg {...p}><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></Svg>;
 const Check = (p) => <Svg {...p}><path d="M20 6 9 17l-5-5"/></Svg>;
 const Users = (p) => <Svg {...p}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></Svg>;
@@ -45,56 +45,59 @@ function NumStepper({ value, set, min = 0, step = 1 }) {
 }
 
 function CalcSheet() {
-  const [people, setPeople] = useState(1);
+  const [numM, setNumM] = useState(1);
+  const [numA, setNumA] = useState(0);
   const [bottles, setBottles] = useState(0);
   const [bottlePrice, setBottlePrice] = useState("");
   const [tcOn, setTcOn] = useState("");
   const [tcOff, setTcOff] = useState("");
+  const [mTcOn, setMTcOn] = useState("");
+  const [mTcOff, setMTcOff] = useState("");
+  const [splitMode, setSplitMode] = useState("bottle");
   const [helpers, setHelpers] = useState([{ id: 1, name: "", time: 1, wing: false, nom: false }]);
+  const [mHelpers, setMHelpers] = useState([{ id: 1, name: "", time: 1, wing: false, nom: false }]);
   const [items, setItems] = useState([
-    { id: 1, name: "룸티", amount: "", waiter: true },
-    { id: 2, name: "사입", amount: "", waiter: true },
+    { id: 1, name: "룸티", amount: "", waiter: true, discount: false },
+    { id: 2, name: "사입", amount: "", waiter: true, discount: false },
+    { id: 3, name: "서비스", amount: "", waiter: false, discount: true },
   ]);
   const [sipMemo, setSipMemo] = useState("");
-  const [splitMode, setSplitMode] = useState("bottle");
   const [copied, setCopied] = useState(false);
-  const hId = useRef(2), iId = useRef(3);
+  const hId = useRef(2), mId = useRef(2), iId = useRef(4);
 
   const liquorAmt = bottles * (Number(bottlePrice) || 0);
   const onP = Number(tcOn) || 0, offP = Number(tcOff) || 0;
-  const calcTc = (h) => {
+  const mOnP = Number(mTcOn) || 0, mOffP = Number(mTcOff) || 0;
+
+  const calcTc = (h, onPrice, offPrice) => {
     const t = Number(h.time) || 0;
     const onT = splitMode === "first" ? (bottles > 0 ? Math.min(t, 1) : 0) : Math.min(t, bottles);
     const offT = Math.max(0, t - onT);
-    const base = Math.ceil(onT * onP + offT * offP);
+    const base = Math.ceil(onT * onPrice + offT * offPrice);
     return { onT, offT, amt: base + (h.nom ? t : 0) };
   };
-  const tcTotal = useMemo(() => helpers.reduce((s, h) => s + calcTc(h).amt, 0), [helpers, tcOn, tcOff, bottles, splitMode]);
-  const wingCount = useMemo(() => helpers.filter((h) => h.wing).length, [helpers]);
-  const itemsTotal = useMemo(() => items.reduce((s, it) => s + (Number(it.amount) || 0), 0), [items]);
-  const waiterTotal = useMemo(() => items.reduce((s, it) => s + (it.waiter ? Number(it.amount) || 0 : 0), 0), [items]);
-  const total = liquorAmt + tcTotal + itemsTotal;
+  const tcTotal = useMemo(() => helpers.reduce((s, h) => s + calcTc(h, onP, offP).amt, 0), [helpers, tcOn, tcOff, bottles, splitMode]);
+  const mTcTotal = useMemo(() => mHelpers.reduce((s, h) => s + calcTc(h, mOnP, mOffP).amt, 0), [mHelpers, mTcOn, mTcOff, bottles, splitMode]);
+  const wingCount = useMemo(() => [...helpers, ...mHelpers].filter((h) => h.wing).length, [helpers, mHelpers]);
 
-  const upH = (id, p) => setHelpers((a) => a.map((h) => (h.id === id ? { ...h, ...p } : h)));
-  const addH = () => setHelpers((a) => [...a, { id: ++hId.current, name: "", time: 1, wing: false, nom: false }]);
-  const rmH = (id) => setHelpers((a) => a.filter((h) => h.id !== id));
+  const itemsTotal = useMemo(() => items.reduce((s, it) => s + (it.discount ? -1 : 1) * (Number(it.amount) || 0), 0), [items]);
+  const waiterTotal = useMemo(() => items.reduce((s, it) => s + (it.waiter && !it.discount ? Number(it.amount) || 0 : 0), 0), [items]);
+  const total = liquorAmt + tcTotal + mTcTotal + itemsTotal;
+
   const upI = (id, p) => setItems((a) => a.map((it) => (it.id === id ? { ...it, ...p } : it)));
-  const addI = () => setItems((a) => [...a, { id: ++iId.current, name: "", amount: "", waiter: false }]);
+  const addI = () => setItems((a) => [...a, { id: ++iId.current, name: "", amount: "", waiter: false, discount: false }]);
   const rmI = (id) => setItems((a) => a.filter((it) => it.id !== id));
-  const setHTime = (id, cur) => (fn) => upH(id, { time: typeof fn === "function" ? fn(Number(cur) || 0) : fn });
 
   const billText = useMemo(() => {
-    const L = [`[계산서]  ${people}인`, "──────────────"];
+    const L = [`[계산서]  남 ${numM} · 아베크 ${numA}`, "──────────────"];
     if (bottles > 0) L.push(`술  ${won(bottlePrice)} × ${bottles}병  =  ${won(liquorAmt)}`);
-    helpers.forEach((h) => {
-      if (!h.name && !Number(h.time)) return;
-      L.push(`${h.name || "도우미"}  ${f1(Number(h.time) || 0)}타임${h.nom ? " 지명" : ""}  ${won(calcTc(h).amt)}`);
-    });
-    items.forEach((it) => { if (it.name || Number(it.amount)) L.push(`${it.name || "항목"}  ${won(it.amount)}`); });
+    helpers.forEach((h) => { if (h.name || Number(h.time)) L.push(`${h.name || "도우미"}  ${f1(Number(h.time) || 0)}타임${h.nom ? " 지명" : ""}  ${won(calcTc(h, onP, offP).amt)}`); });
+    if (numA > 0) mHelpers.forEach((h) => { if (h.name || Number(h.time)) L.push(`(선수) ${h.name || "도우미"}  ${f1(Number(h.time) || 0)}타임${h.nom ? " 지명" : ""}  ${won(calcTc(h, mOnP, mOffP).amt)}`); });
+    items.forEach((it) => { if (it.name || Number(it.amount)) L.push(`${it.name || "항목"}  ${it.discount ? "-" : ""}${won(it.amount)}`); });
     if (sipMemo.trim()) L.push(`사입내역) ${sipMemo.trim()}`);
     L.push("──────────────", `합계   ${won(total)}`);
     return L.join("\n");
-  }, [people, bottles, bottlePrice, liquorAmt, helpers, tcOn, tcOff, items, sipMemo, total, splitMode]);
+  }, [numM, numA, bottles, bottlePrice, liquorAmt, helpers, mHelpers, tcOn, tcOff, mTcOn, mTcOff, items, sipMemo, total, splitMode]);
 
   const copy = async () => {
     try { await navigator.clipboard.writeText(billText); }
@@ -110,6 +113,35 @@ function CalcSheet() {
   const txt = "bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-zinc-100 text-sm focus:outline-none focus:border-amber-500 placeholder:text-zinc-700";
   const card = "bg-zinc-900/60 border border-zinc-800 rounded-xl p-3";
 
+  const renderHelpers = (list, setList, onPrice, offPrice) => {
+    const up = (id, p) => setList((a) => a.map((h) => (h.id === id ? { ...h, ...p } : h)));
+    const rm = (id) => setList((a) => a.filter((h) => h.id !== id));
+    const setT = (id, cur) => (fn) => up(id, { time: typeof fn === "function" ? fn(Number(cur) || 0) : fn });
+    return list.map((h) => {
+      const { onT, offT, amt } = calcTc(h, onPrice, offPrice);
+      return (
+        <div key={h.id} className="bg-zinc-900/50 rounded-lg p-2 space-y-2">
+          <div className="flex items-center gap-2">
+            <input value={h.name} onChange={(e) => up(h.id, { name: e.target.value })} placeholder="이름" className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-500 placeholder:text-zinc-700" />
+            <div className="text-right shrink-0">
+              <div className="text-sm text-zinc-200">{won(amt)}</div>
+              {(onT > 0 || offT > 0 || h.nom) && <div className="text-[9px] text-zinc-500">O{f1(onT)}·X{f1(offT)}{h.nom ? " +지명" : ""}</div>}
+            </div>
+            <button onClick={() => rm(h.id)} className="text-zinc-600 active:text-red-400 shrink-0"><Trash2 size={15} /></button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => up(h.id, { nom: !h.nom })} className={"text-[11px] px-2 py-1.5 rounded-lg border " + (h.nom ? "border-emerald-500/60 text-emerald-400 bg-emerald-500/10" : "border-zinc-700 text-zinc-500")}>지명</button>
+            <button onClick={() => up(h.id, { wing: !h.wing })} className={"text-[11px] px-2 py-1.5 rounded-lg border " + (h.wing ? "border-amber-500/60 text-amber-400 bg-amber-500/10" : "border-zinc-700 text-zinc-500")}>날개</button>
+            <div className="ml-auto flex items-center gap-1.5">
+              <span className="text-[10px] text-zinc-500">타임</span>
+              <NumStepper value={h.time} set={setT(h.id, h.time)} min={0} step={0.5} />
+            </div>
+          </div>
+        </div>
+      );
+    });
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-200" style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif"}}>
       <div className="max-w-md mx-auto px-4 py-6 pb-28">
@@ -118,9 +150,15 @@ function CalcSheet() {
           <p className="text-xs text-zinc-500 mt-1">{new Date().toLocaleDateString("ko-KR", { month: "long", day: "numeric", weekday: "short" })} · 단위 만원</p>
         </div>
 
-        <div className="flex items-center justify-between bg-zinc-900/60 border border-zinc-800 rounded-xl px-3 py-2 mb-3">
-          <span className="flex items-center gap-1.5 text-sm text-zinc-400"><Users size={15} /><span className="text-amber-400 inline-flex"></span>인원</span>
-          <NumStepper value={people} set={setPeople} min={1} step={1} />
+        <div className="flex gap-3 mb-3">
+          <div className="flex-1 flex items-center justify-between bg-zinc-900/60 border border-zinc-800 rounded-xl px-3 py-2">
+            <span className="flex items-center gap-1.5 text-sm text-zinc-400"><Users size={15} />남</span>
+            <NumStepper value={numM} set={setNumM} min={0} step={1} />
+          </div>
+          <div className="flex-1 flex items-center justify-between bg-zinc-900/60 border border-zinc-800 rounded-xl px-3 py-2">
+            <span className="text-sm text-zinc-400">아베크</span>
+            <NumStepper value={numA} set={setNumA} min={0} step={1} />
+          </div>
         </div>
 
         <div className={card + " mb-3"}>
@@ -139,8 +177,8 @@ function CalcSheet() {
         </div>
 
         <div className={card + " mb-3"}>
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium text-zinc-100">티씨 단가</span>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-zinc-100">티씨 단가 <span className="text-[10px] text-pink-300">여</span></span>
             <div className="flex items-center gap-2 text-xs">
               <span className="text-amber-300">술O</span>
               <input inputMode="decimal" value={tcOn} onChange={(e) => setTcOn(num(e.target.value))} className={inp + " w-14"} />
@@ -157,48 +195,41 @@ function CalcSheet() {
           </div>
           {(!tcOn || !tcOff)
             ? <p className="text-[11px] text-red-400/80 mb-3">⚠ 술O·술X 단가를 둘 다 채워야 계산돼요</p>
-            : <p className="text-[11px] text-zinc-500 mb-3">{splitMode === "first"
-                ? `첫 타임만 술O(${tcOn}), 나머지 술X(${tcOff})`
-                : `술 ${bottles}병 → ${bottles}타임 술O(${tcOn}), 나머지 술X(${tcOff})`} · 지명 타임당 +1</p>}
-
-          <div className="space-y-2">
-            {helpers.map((h) => {
-              const { onT, offT, amt } = calcTc(h);
-              return (
-                <div key={h.id} className="bg-zinc-900/50 rounded-lg p-2 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <input value={h.name} onChange={(e) => upH(h.id, { name: e.target.value })} placeholder="이름" className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-500 placeholder:text-zinc-700" />
-                    <div className="text-right shrink-0">
-                      <div className="text-sm text-zinc-200">{won(amt)}</div>
-                      {(onT > 0 || offT > 0 || h.nom) && <div className="text-[9px] text-zinc-500">O{f1(onT)}·X{f1(offT)}{h.nom ? " +지명" : ""}</div>}
-                    </div>
-                    <button onClick={() => rmH(h.id)} className="text-zinc-600 active:text-red-400 shrink-0"><Trash size={15} /></button>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <button onClick={() => upH(h.id, { nom: !h.nom })} className={"text-[11px] px-2 py-1.5 rounded-lg border " + (h.nom ? "border-emerald-500/60 text-emerald-400 bg-emerald-500/10" : "border-zinc-700 text-zinc-500")}>지명</button>
-                    <button onClick={() => upH(h.id, { wing: !h.wing })} className={"text-[11px] px-2 py-1.5 rounded-lg border " + (h.wing ? "border-amber-500/60 text-amber-400 bg-amber-500/10" : "border-zinc-700 text-zinc-500")}>날개</button>
-                    <div className="ml-auto flex items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500">타임</span>
-                      <NumStepper value={h.time} set={setHTime(h.id, h.time)} min={0} step={0.5} />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <button onClick={addH} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 도우미 추가</button>
-          <div className="text-right mt-2 text-sm"><span className="text-zinc-500">티씨 합계 </span><span className="font-semibold text-zinc-100">{won(tcTotal)}</span>{wingCount > 0 && <span className="text-[11px] text-amber-400/80"> · 날개 {wingCount}</span>}</div>
+            : <p className="text-[11px] text-zinc-500 mb-3">{splitMode === "first" ? `첫 타임만 술O(${tcOn}), 나머지 술X(${tcOff})` : `술 ${bottles}병 → ${bottles}타임 술O(${tcOn}), 나머지 술X(${tcOff})`} · 지명 타임당 +1</p>}
+          <div className="space-y-2">{renderHelpers(helpers, setHelpers, onP, offP)}</div>
+          <button onClick={() => setHelpers((a) => [...a, { id: ++hId.current, name: "", time: 1, wing: false, nom: false }])} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 도우미 추가</button>
+          <div className="text-right mt-2 text-sm"><span className="text-zinc-500">티씨 합계 </span><span className="font-semibold text-zinc-100">{won(tcTotal)}</span></div>
         </div>
 
+        {numA > 0 && (
+          <div className={card + " mb-3"}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium text-zinc-100">선수 단가 <span className="text-[10px] text-sky-300">남</span></span>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-amber-300">술O</span>
+                <input inputMode="decimal" value={mTcOn} onChange={(e) => setMTcOn(num(e.target.value))} className={inp + " w-14"} />
+                <span className="text-zinc-400">술X</span>
+                <input inputMode="decimal" value={mTcOff} onChange={(e) => setMTcOff(num(e.target.value))} className={inp + " w-14"} />
+              </div>
+            </div>
+            {(!mTcOn || !mTcOff) && <p className="text-[11px] text-red-400/80 mb-3">⚠ 선수 술O·술X 단가를 채워야 계산돼요</p>}
+            <div className="space-y-2">{renderHelpers(mHelpers, setMHelpers, mOnP, mOffP)}</div>
+            <button onClick={() => setMHelpers((a) => [...a, { id: ++mId.current, name: "", time: 1, wing: false, nom: false }])} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 선수 추가</button>
+            <div className="text-right mt-2 text-sm"><span className="text-zinc-500">선수 합계 </span><span className="font-semibold text-zinc-100">{won(mTcTotal)}</span></div>
+          </div>
+        )}
+
         <div className={card}>
-          <span className="text-sm font-medium text-zinc-100">룸티 · 사입 · 기타</span>
+          <span className="text-sm font-medium text-zinc-100">룸티 · 사입 · 서비스 · 기타</span>
           <div className="space-y-2 mt-3">
             {items.map((it) => (
               <div key={it.id} className="flex items-center gap-2">
                 <input value={it.name} onChange={(e) => upI(it.id, { name: e.target.value })} placeholder="항목명" className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-500 placeholder:text-zinc-700" />
-                <input inputMode="decimal" value={it.amount} onChange={(e) => upI(it.id, { amount: num(e.target.value) })} placeholder="만원" className={inp + " w-20"} />
-                <button onClick={() => upI(it.id, { waiter: !it.waiter })} className={"text-[10px] px-1.5 py-1 rounded-md border whitespace-nowrap " + (it.waiter ? "border-sky-500/60 text-sky-300 bg-sky-500/10" : "border-zinc-700 text-zinc-600")}>받을돈</button>
-                <button onClick={() => rmI(it.id)} className="text-zinc-600 active:text-red-400"><Trash size={15} /></button>
+                <span className={"text-xs shrink-0 " + (it.discount ? "text-red-400" : "text-zinc-600")}>{it.discount ? "−" : ""}</span>
+                <input inputMode="decimal" value={it.amount} onChange={(e) => upI(it.id, { amount: num(e.target.value) })} placeholder="만원" className={inp + " w-16"} />
+                <button onClick={() => upI(it.id, { discount: !it.discount, waiter: it.discount ? it.waiter : false })} className={"text-[10px] px-1.5 py-1 rounded-md border whitespace-nowrap " + (it.discount ? "border-red-500/60 text-red-400 bg-red-500/10" : "border-zinc-700 text-zinc-600")}>할인</button>
+                <button onClick={() => upI(it.id, { waiter: !it.waiter, discount: it.waiter ? it.discount : false })} className={"text-[10px] px-1.5 py-1 rounded-md border whitespace-nowrap " + (it.waiter ? "border-sky-500/60 text-sky-300 bg-sky-500/10" : "border-zinc-700 text-zinc-600")}>받을돈</button>
+                <button onClick={() => rmI(it.id)} className="text-zinc-600 active:text-red-400"><Trash2 size={15} /></button>
               </div>
             ))}
           </div>
@@ -218,6 +249,7 @@ function CalcSheet() {
             <span className="text-zinc-400 text-sm">웨이터 받을돈 <span className="text-[10px] text-zinc-600">룸티+사입</span></span>
             <span className="text-xl font-bold text-sky-400">{won(waiterTotal)}</span>
           </div>
+          {wingCount > 0 && <div className="text-right text-[11px] text-amber-400/80">날개 {wingCount}</div>}
         </div>
 
         <div className="mt-6">
