@@ -73,8 +73,8 @@ const newSheet = (prices) => ({
   tcOn: prices.tcOn, tcOff: prices.tcOff, ban: prices.ban, chabi: prices.chabi,
   mTcOn: prices.mTcOn, mTcOff: prices.mTcOff, mBan: prices.mBan, mChabi: prices.mChabi,
   splitMode: "bottle",
-  helpers: [{ id: 1, name: "", start: "", end: null, manual: null, wing: false, nom: false }],
-  mHelpers: [{ id: 1, name: "", start: "", end: null, manual: null, wing: false, nom: false }],
+  helpers: [{ id: 1, name: "", start: "", end: null, manual: null, wing: false, nom: false, line: 0 }],
+  mHelpers: [{ id: 1, name: "", start: "", end: null, manual: null, wing: false, nom: false, line: 0 }],
   items: [
     { id: 1, name: "룸티", amount: "", waiter: true, discount: false },
     { id: 2, name: "사입", amount: "", waiter: true, discount: false },
@@ -93,6 +93,20 @@ const calcTcAmt = (h, t, totalBottles, splitMode, onP, offP, banP, chabiP) => {
   const offT = Math.max(0, full - onT);
   const amt = Math.ceil(onT * (Number(onP) || 0) + offT * (Number(offP) || 0) + banti * (Number(banP) || 0) + chabi * (Number(chabiP) || 0) + (h.nom ? t : 0));
   return { full, onT, offT, banti, chabi, amt };
+};
+
+// 의무술 필요 병수: 테이블 스타트(1~4인 1병 / 5인+ 2병) + 라인별 추가(2인+ 4·8·12 / 1인 5·9·13)
+const mandatory = (s, nowMs) => {
+  const tb = s.drinks.reduce((a, d) => a + (Number(d.bottles) || 0), 0);
+  const n = Math.max(1, s.numGuest);
+  const allH = [...s.helpers, ...(s.guestMode === "아베크" ? s.mHelpers : [])];
+  const lineTimes = [];
+  for (let i = 0; i < n; i++) lineTimes.push(allH.filter((h) => Math.min(h.line || 0, n - 1) === i).reduce((a, h) => a + effTime(h, nowMs), 0));
+  const startB = n <= 4 ? 1 : 2;
+  const addCount = (T) => n === 1 ? (T >= 5 ? Math.floor((T - 5) / 4) + 1 : 0) : (T >= 4 ? Math.floor((T - 4) / 4) + 1 : 0);
+  const req = startB + lineTimes.reduce((a, T) => a + addCount(T), 0);
+  const totalLineTime = lineTimes.reduce((a, b) => a + b, 0);
+  return { req, bottles: tb, shortage: req - tb, totalLineTime, lineTimes };
 };
 
 const sheetTotal = (s) => {
@@ -153,6 +167,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
   const itemsTotal = s.items.reduce((a, it) => a + (it.discount ? -1 : 1) * (Number(it.amount) || 0), 0);
   const waiterTotal = s.items.reduce((a, it) => a + (it.waiter && !it.discount ? Number(it.amount) || 0 : 0), 0);
   const total = liquorAmt + tcTotal + mTcTotal + itemsTotal;
+  const mand = mandatory(s, now);
 
   const upI = (id, p) => set({ items: s.items.map((it) => (it.id === id ? { ...it, ...p } : it)) });
   const addI = () => set({ items: [...s.items, { id: Date.now(), name: "", amount: "", waiter: false, discount: false }] });
@@ -212,9 +227,16 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
             </div>
             <button onClick={() => rm(h.id)} className="text-zinc-600 active:text-red-400 shrink-0"><Trash2 size={15} /></button>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <button onClick={() => up(h.id, { nom: !h.nom })} className={"text-[11px] px-2 py-1.5 rounded-lg border " + (h.nom ? "border-emerald-500/60 text-emerald-400 bg-emerald-500/10" : "border-zinc-700 text-zinc-500")}>지명</button>
             <button onClick={() => up(h.id, { wing: !h.wing })} className={"text-[11px] px-2 py-1.5 rounded-lg border " + (h.wing ? "border-amber-500/60 text-amber-400 bg-amber-500/10" : "border-zinc-700 text-zinc-500")}>날개</button>
+            {s.numGuest > 1 && (
+              <div className="flex rounded-lg overflow-hidden border border-zinc-700">
+                {Array.from({ length: s.numGuest }).map((_, i) => (
+                  <button key={i} onClick={() => up(h.id, { line: i })} className={"px-2 py-1.5 text-[11px] " + (Math.min(h.line || 0, s.numGuest - 1) === i ? "bg-zinc-600 text-white" : "text-zinc-400")}>{String.fromCharCode(65 + i)}</button>
+                ))}
+              </div>
+            )}
             <div className="ml-auto flex items-center gap-1.5">
               <span className="text-[10px] text-zinc-500">시작</span>
               <input inputMode="numeric" value={h.start} onChange={(e) => up(h.id, { start: e.target.value.replace(/[^0-9]/g, "") })} placeholder="1105" className="w-14 bg-zinc-900 border border-zinc-700 rounded-lg px-1 py-1.5 text-sm text-center focus:outline-none focus:border-amber-500 placeholder:text-zinc-700" />
@@ -323,6 +345,12 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
           <div className="text-right mt-2 text-sm"><span className="text-zinc-500">술 합계 </span><span className="font-semibold text-amber-300">{won(liquorAmt)}</span></div>
         </div>
 
+        {mand.totalLineTime > 0 && mand.shortage > 0 && (
+          <div className="mb-3 text-[13px] text-red-300 bg-red-500/10 border border-red-500/40 rounded-lg px-3 py-2.5">
+            ⚠ 술이 <b className="text-red-200">{f1(mand.shortage)}병 부족</b>합니다. <span className="text-red-300/70">(의무 {f1(mand.req)}병 · 현재 {mand.bottles}병)</span>
+          </div>
+        )}
+
         {/* 티씨 */}
         <div className={card + " mb-3"}>
           <div className="flex items-center justify-between mb-2"><span className="text-sm font-medium text-zinc-100">티씨 단가</span>
@@ -336,7 +364,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
           </div>
           <div className="mb-3">{priceRow("여 도우미", "text-pink-300", "tcOn", "tcOff", "ban", "chabi")}</div>
           <div className="space-y-2">{renderHelpers(s.helpers, "helpers", s.tcOn, s.tcOff, s.ban, s.chabi)}</div>
-          <button onClick={() => set({ helpers: [...s.helpers, { id: Date.now(), name: "", start: "", end: null, manual: null, wing: false, nom: false }] })} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 도우미 추가</button>
+          <button onClick={() => set({ helpers: [...s.helpers, { id: Date.now(), name: "", start: "", end: null, manual: null, wing: false, nom: false, line: 0 }] })} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 도우미 추가</button>
           <div className="text-right mt-2 text-sm"><span className="text-zinc-500">티씨 합계 </span><span className="font-semibold text-zinc-100">{won(tcTotal)}</span></div>
         </div>
 
@@ -345,7 +373,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
           <div className={card + " mb-3"}>
             <div className="mb-3">{priceRow("선수(남)", "text-sky-300", "mTcOn", "mTcOff", "mBan", "mChabi")}</div>
             <div className="space-y-2">{renderHelpers(s.mHelpers, "mHelpers", s.mTcOn, s.mTcOff, s.mBan, s.mChabi)}</div>
-            <button onClick={() => set({ mHelpers: [...s.mHelpers, { id: Date.now(), name: "", start: "", end: null, manual: null, wing: false, nom: false }] })} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 선수 추가</button>
+            <button onClick={() => set({ mHelpers: [...s.mHelpers, { id: Date.now(), name: "", start: "", end: null, manual: null, wing: false, nom: false, line: 0 }] })} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 선수 추가</button>
             <div className="text-right mt-2 text-sm"><span className="text-zinc-500">선수 합계 </span><span className="font-semibold text-zinc-100">{won(mTcTotal)}</span></div>
           </div>
         )}
