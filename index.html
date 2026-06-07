@@ -114,7 +114,7 @@ const calcTcAmt = (h, t0, onBottles, splitMode, onP, offP, banP, chabiP) => {
 
 // 의무술 필요 병수: 테이블 스타트(1~4인 1병 / 5인+ 2병) + 라인별 추가(2인+ 4·8·12 / 1인 5·9·13)
 const mandatory = (s, nowMs) => {
-  const tb = s.drinks.reduce((a, d) => a + (Number(d.bottles) || 0), 0);
+  const tb = s.drinks.reduce((a, d) => a + ((Number(d.price) || 0) >= 5 ? (Number(d.bottles) || 0) : 0), 0);
   const n = Math.max(1, s.numGuest);
   const allH = [...s.helpers, ...(s.guestMode === "아베크" ? s.mHelpers : [])];
   const lineTimes = [];
