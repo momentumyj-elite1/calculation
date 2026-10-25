@@ -112,31 +112,102 @@ const calcTcAmt = (h, t0, onBottles, splitMode, onP, offP, banP, chabiP) => {
   return { full, onT, offT, banti, chabi, amt };
 };
 
-// 의무술 필요 병수: 테이블 스타트(1~4인 1병 / 5인+ 2병) + 라인별 추가(2인+ 4·8·12 / 1인 5·9·13)
+// ── 방 경과 시간 기반 계산 (의무술·술적용 배정 공통) ──
+// 도우미의 방 체류 구간 [start,end] (클록 ms). start 없으면 null.
+const helperIv = (h, nowMs) => {
+  if (!h || !h.start) return null;
+  const sMs = startMs(parseStart(h.start), nowMs);
+  if (sMs == null) return null;
+  const eMs = h.end || nowMs;
+  return eMs > sMs ? [sMs, eMs] : null;
+};
+// 특정 시각 t 에 방에 있었는지
+const presentAt = (h, t, nowMs) => {
+  const iv = helperIv(h, nowMs);
+  return iv ? (iv[0] <= t && t < iv[1]) : false;
+};
+// 도우미들의 체류 구간 합집합 → 커버된 구간 목록과 총 분 (전원 빠진 구간은 빠짐)
+const roomSegments = (hs, nowMs) => {
+  const iv = hs.map((h) => helperIv(h, nowMs)).filter(Boolean).sort((a, b) => a[0] - b[0]);
+  const seg = [];
+  for (const [s0, e0] of iv) {
+    const last = seg[seg.length - 1];
+    if (last && s0 <= last[1]) last[1] = Math.max(last[1], e0);
+    else seg.push([s0, e0]);
+  }
+  const minutes = seg.reduce((a, [s0, e0]) => a + (e0 - s0) / 60000, 0);
+  return { seg, minutes };
+};
+// 커버된 시간 M분 지점의 클록 시각 (빈틈 제외). 범위 넘으면 마지막 순간.
+const coveredToClock = (seg, M) => {
+  let acc = 0;
+  for (const [s0, e0] of seg) {
+    const dur = (e0 - s0) / 60000;
+    if (acc + dur >= M) return Math.min(s0 + (M - acc) * 60000, e0 - 1); // 구간 끝 경계는 직전 순간으로
+    acc += dur;
+  }
+  return seg.length ? seg[seg.length - 1][1] - 1 : null;
+};
+// 방 경과 타임 (전원 부재 구간 제외)
+const roomElapsed = (s, nowMs) => {
+  const all = [...s.helpers, ...(s.guestMode === "아베크" ? s.mHelpers : [])];
+  return autoTime(Math.round(roomSegments(all, nowMs).minutes));
+};
+// 한 라인의 현재 메인: 그 시각 라인에 있던 비-날개 중 start 가장 늦은 사람. 없으면 날개 중 가장 늦은 사람.
+const mainAt = (hs, line, t, n, nowMs) => {
+  const inL = hs.filter((h) => Math.min(h.line || 0, n - 1) === line && presentAt(h, t, nowMs));
+  if (!inL.length) return null;
+  const nonW = inL.filter((h) => !h.wing);
+  const pool = nonW.length ? nonW : inL;
+  return pool.reduce((best, h) => {
+    const a = startMs(parseStart(h.start), nowMs), b = startMs(parseStart(best.start), nowMs);
+    return a > b ? h : best;
+  });
+};
+// 술적용 배정: k번째 병이 들어가는 방경과 지점(스타트 1타임 → 추가 4·8·12…), 그 시각 각 라인 메인에게 1씩.
+const onMark = (k, startB) => (k <= startB ? 1 : 4 * (k - startB)); // 타임 단위
+const assignOn = (hs, s, onB, seg, nowMs) => {
+  const n = Math.max(1, s.numGuest);
+  const startB = n <= 4 ? 1 : 2;
+  const res = {}; hs.forEach((h) => { res[h.id] = 0; });
+  for (let k = 1; k <= onB; k++) {
+    const t = coveredToClock(seg, onMark(k, startB) * 60);
+    if (t == null) continue;
+    for (let line = 0; line < n; line++) { const m = mainAt(hs, line, t, n, nowMs); if (m) res[m.id] += 1; }
+  }
+  return res;
+};
+
+// 의무술 필요 병수: 스타트(1~4인 1병 / 5인+ 2병) + 방 경과 추가(2인+ 4·8·12 / 1인 5·9·13), 추가 최대 2병
 const mandatory = (s, nowMs) => {
   const tb = s.drinks.reduce((a, d) => a + ((Number(d.price) || 0) >= 5 ? (Number(d.bottles) || 0) : 0), 0);
   const n = Math.max(1, s.numGuest);
-  const allH = [...s.helpers, ...(s.guestMode === "아베크" ? s.mHelpers : [])];
-  const lineTimes = [];
-  for (let i = 0; i < n; i++) lineTimes.push(allH.filter((h) => Math.min(h.line || 0, n - 1) === i).reduce((a, h) => a + effTime(h, nowMs), 0));
+  const T = roomElapsed(s, nowMs);
   const startB = n <= 4 ? 1 : 2;
-  const addCount = (T) => n === 1 ? (T >= 5 ? Math.floor((T - 5) / 4) + 1 : 0) : (T >= 4 ? Math.floor((T - 4) / 4) + 1 : 0);
-  const addTotal = Math.min(2, lineTimes.reduce((a, T) => a + addCount(T), 0)); // 추가는 최대 2병
+  const addCount = (t) => (n === 1 ? (t >= 5 ? Math.floor((t - 5) / 4) + 1 : 0) : (t >= 4 ? Math.floor((t - 4) / 4) + 1 : 0));
+  const addTotal = Math.min(2, addCount(T));
   const req = startB + addTotal;
-  const totalLineTime = lineTimes.reduce((a, b) => a + b, 0);
-  return { req, bottles: tb, shortage: req - tb, totalLineTime, lineTimes };
+  return { req, bottles: tb, shortage: req - tb, roomTime: T };
 };
 
-const sheetTotal = (s) => {
-  const tb = s.drinks.reduce((a, d) => a + (Number(d.bottles) || 0), 0);
+// 시트 금액 종합 (목록/상세 공통). 술적용은 메인 매니저에게 배정된 개수만큼만.
+const computeSheet = (s, nowMs) => {
   const onB = s.drinks.reduce((a, d) => a + ((Number(d.price) || 0) >= 5 ? (Number(d.bottles) || 0) : 0), 0);
   const liquor = s.drinks.reduce((a, d) => a + (Number(d.bottles) || 0) * (Number(d.price) || 0), 0);
-  const sum = (list, onP, offP, banP, chabiP) => list.reduce((a, h) => a + calcTcAmt(h, effTime(h, Date.now()), onB, s.splitMode, onP, offP, banP, chabiP).amt, 0);
-  const tcT = sum(s.helpers, s.tcOn, s.tcOff, s.ban, s.chabi);
-  const mT = s.guestMode === "아베크" ? sum(s.mHelpers, s.mTcOn, s.mTcOff, s.mBan, s.mChabi) : 0;
-  const it = s.items.reduce((a, x) => a + (x.discount ? -1 : 1) * (Number(x.amount) || 0), 0);
-  return liquor + tcT + mT + it;
+  const avec = s.guestMode === "아베크";
+  const all = [...s.helpers, ...(avec ? s.mHelpers : [])];
+  const { seg } = roomSegments(all, nowMs);
+  const onF = assignOn(s.helpers, s, onB, seg, nowMs);
+  const onM = avec ? assignOn(s.mHelpers, s, onB, seg, nowMs) : {};
+  const effOn = (h, map) => (h.wing ? 0 : ((h.onAdj != null && h.onAdj !== "") ? Math.max(0, Number(h.onAdj) || 0) : (map[h.id] || 0)));
+  const amt = (h, map, onP, offP, banP, chabiP) => calcTcAmt(h, effTime(h, nowMs), effOn(h, map), s.splitMode, onP, offP, banP, chabiP).amt;
+  const tcTotal = s.helpers.reduce((a, h) => a + amt(h, onF, s.tcOn, s.tcOff, s.ban, s.chabi), 0);
+  const mTcTotal = avec ? s.mHelpers.reduce((a, h) => a + amt(h, onM, s.mTcOn, s.mTcOff, s.mBan, s.mChabi), 0) : 0;
+  const items = s.items.reduce((a, x) => a + (x.discount ? -1 : 1) * (Number(x.amount) || 0), 0);
+  return { total: liquor + tcTotal + mTcTotal + items, liquor, tcTotal, mTcTotal, items, onF, onM, onB, effOn };
 };
+
+const sheetTotal = (s) => computeSheet(s, Date.now()).total;
 
 const Svg = ({ size = 16, fill = "none", children }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>);
 const Plus = (p) => <Svg {...p}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Svg>;
@@ -159,7 +230,7 @@ function NumStepper({ value, set, min = 0, step = 1 }) {
   );
 }
 
-function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrinks, setSavedDrinks, setDefaultPrice }) {
+function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrinks, setSavedDrinks, setDefaultPrice, guestNames = [] }) {
   const [copied, setCopied] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -180,13 +251,14 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
   const toggleSave = (d) => { const nm = (d.name || "").trim(); if (!nm) return; setSavedDrinks(isSaved(nm) ? savedDrinks.filter((x) => x.name !== nm) : [...savedDrinks, { name: nm, price: d.price }]); };
   const useSaved = (sd) => { const i = s.drinks.findIndex((d) => !d.name && !Number(d.price)); if (i >= 0) { const c = [...s.drinks]; c[i] = { ...c[i], name: sd.name, price: sd.price }; set({ drinks: c }); } else set({ drinks: [...s.drinks, { id: Date.now(), name: sd.name, bottles: 1, price: sd.price }] }); };
 
-  const ctc = (h, onP, offP, banP, chabiP) => calcTcAmt(h, effTime(h, now), onBottles, s.splitMode, onP, offP, banP, chabiP);
-  const tcTotal = s.helpers.reduce((a, h) => a + ctc(h, s.tcOn, s.tcOff, s.ban, s.chabi).amt, 0);
-  const mTcTotal = s.guestMode === "아베크" ? s.mHelpers.reduce((a, h) => a + ctc(h, s.mTcOn, s.mTcOff, s.mBan, s.mChabi).amt, 0) : 0;
+  const comp = computeSheet(s, now);
+  const ctc = (h, map, onP, offP, banP, chabiP) => calcTcAmt(h, effTime(h, now), comp.effOn(h, map), s.splitMode, onP, offP, banP, chabiP);
+  const tcTotal = comp.tcTotal;
+  const mTcTotal = comp.mTcTotal;
   const wingCount = [...s.helpers, ...(s.guestMode === "아베크" ? s.mHelpers : [])].filter((h) => h.wing).length;
-  const itemsTotal = s.items.reduce((a, it) => a + (it.discount ? -1 : 1) * (Number(it.amount) || 0), 0);
+  const itemsTotal = comp.items;
   const waiterTotal = s.items.reduce((a, it) => a + (it.waiter && !it.discount ? Number(it.amount) || 0 : 0), 0);
-  const total = liquorAmt + tcTotal + mTcTotal + itemsTotal;
+  const total = comp.total;
   const mand = mandatory(s, now);
 
   const upI = (id, p) => set({ items: s.items.map((it) => (it.id === id ? { ...it, ...p } : it)) });
@@ -197,8 +269,8 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
     const head = [s.date, s.room && s.room + "호", s.guest, s.waiter].filter(Boolean).join(" · ");
     const L = [`[계산서] ${head}`, `${s.guestMode} ${s.numGuest}`, "──────────────"];
     s.drinks.forEach((d) => { if (d.name || Number(d.price)) L.push(`${d.name || "술"}  ${won(d.price)} × ${Number(d.bottles) || 0}병  =  ${won((Number(d.bottles) || 0) * (Number(d.price) || 0))}`); });
-    s.helpers.forEach((h) => { const t = effTime(h, now); if (h.name || t) L.push(`${h.name || "도우미"}  ${f1(t)}타임${h.nom ? " 지명" : ""}  ${won(ctc(h, s.tcOn, s.tcOff, s.ban, s.chabi).amt)}`); });
-    if (s.guestMode === "아베크") s.mHelpers.forEach((h) => { const t = effTime(h, now); if (h.name || t) L.push(`(선수) ${h.name || "도우미"}  ${f1(t)}타임${h.nom ? " 지명" : ""}  ${won(ctc(h, s.mTcOn, s.mTcOff, s.mBan, s.mChabi).amt)}`); });
+    s.helpers.forEach((h) => { const t = effTime(h, now); if (h.name || t) L.push(`${h.name || "도우미"}  ${f1(t)}타임${h.nom ? " 지명" : ""}  ${won(ctc(h, comp.onF, s.tcOn, s.tcOff, s.ban, s.chabi).amt)}`); });
+    if (s.guestMode === "아베크") s.mHelpers.forEach((h) => { const t = effTime(h, now); if (h.name || t) L.push(`(선수) ${h.name || "도우미"}  ${f1(t)}타임${h.nom ? " 지명" : ""}  ${won(ctc(h, comp.onM, s.mTcOn, s.mTcOff, s.mBan, s.mChabi).amt)}`); });
     s.items.forEach((it) => { if (it.name || Number(it.amount)) L.push(`${it.name || "항목"}  ${it.discount ? "-" : ""}${won(it.amount)}`); });
     if (s.sipMemo.trim()) L.push(`사입내역) ${s.sipMemo.trim()}`);
     L.push("──────────────", `합계   ${won(total)}`);
@@ -228,13 +300,15 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
     </div>
   );
 
-  const renderHelpers = (list, key, onP, offP, banP, chabiP) => {
+  const renderHelpers = (list, key, onP, offP, banP, chabiP, onMap) => {
     const up = (id, p) => set({ [key]: list.map((h) => (h.id === id ? { ...h, ...p } : h)) });
     const rm = (id) => set({ [key]: list.filter((h) => h.id !== id) });
     const adj = (h, d) => { const base = (h.manual != null && h.manual !== "") ? Number(h.manual) || 0 : effTime(h, now); up(h.id, { manual: Math.max(0, r1(base + d)) }); };
+    const adjOn = (h, d) => up(h.id, { onAdj: Math.max(0, comp.effOn(h, onMap) + d) });
     return list.map((h) => {
       const t = effTime(h, now);
-      const { full, onT, offT, banti, chabi, amt } = ctc(h, onP, offP, banP, chabiP);
+      const { full, onT, offT, banti, chabi, amt } = ctc(h, onMap, onP, offP, banP, chabiP);
+      const onN = comp.effOn(h, onMap);
       const manualOn = h.manual != null && h.manual !== "";
       const running = !!h.start && !h.end && !manualOn;
       return (
@@ -273,6 +347,17 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
             {running && <span className="text-[10px] text-emerald-400/70">자동</span>}
             {h.start && h.end && !manualOn && <span className="text-[10px] text-zinc-500">끝</span>}
             {manualOn && <span className="text-[10px] text-amber-400/70">수동</span>}
+            {!h.wing && (
+              <span className="ml-auto flex items-center gap-1">
+                <span className="text-[10px] text-amber-300/80">술적용</span>
+                <div className="flex items-center border border-zinc-700 rounded-lg overflow-hidden">
+                  <button onClick={() => adjOn(h, -1)} className="px-2 py-1 bg-zinc-800 text-sm leading-none active:bg-zinc-700">−</button>
+                  <span className="w-6 text-center text-sm text-amber-200">{onN}</span>
+                  <button onClick={() => adjOn(h, 1)} className="px-2 py-1 bg-zinc-800 text-sm leading-none active:bg-zinc-700">＋</button>
+                </div>
+                {h.onAdj != null && h.onAdj !== "" && <button onClick={() => up(h.id, { onAdj: null })} className="text-[11px] text-zinc-500 active:text-amber-400" title="자동으로">↺</button>}
+              </span>
+            )}
           </div>
         </div>
       );
@@ -295,7 +380,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
           <div className="grid grid-cols-2 gap-2">
             <div><label className="text-[10px] text-zinc-500 block mb-1">날짜 <span className="text-zinc-600">(영업일 자동)</span></label><input value={s.date} onChange={(e) => set({ date: e.target.value })} placeholder="6/6" className={titleInp + " font-semibold " + dateColor(s.date)} /></div>
             <div><label className="text-[10px] text-zinc-500 block mb-1">방</label><input value={s.room} onChange={(e) => set({ room: e.target.value })} placeholder="102" className={titleInp} /></div>
-            <div><label className="text-[10px] text-zinc-500 block mb-1">손님</label><input value={s.guest} onChange={(e) => set({ guest: e.target.value })} placeholder="이름/특징" className={titleInp} /></div>
+            <div><label className="text-[10px] text-zinc-500 block mb-1">손님</label><input list="guestNames" value={s.guest} onChange={(e) => set({ guest: e.target.value })} placeholder="이름/특징" className={titleInp} /><datalist id="guestNames">{guestNames.map((g, i) => <option key={i} value={g} />)}</datalist></div>
             <div><label className="text-[10px] text-zinc-500 block mb-1">웨이터</label><input value={s.waiter} onChange={(e) => set({ waiter: e.target.value })} placeholder="이름" className={titleInp} /></div>
           </div>
           <div className="flex items-center gap-2 mt-2">
@@ -365,7 +450,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
           <div className="text-right mt-2 text-sm"><span className="text-zinc-500">술 합계 </span><span className="font-semibold text-amber-300">{won(liquorAmt)}</span></div>
         </div>
 
-        {mand.totalLineTime > 0 && mand.shortage > 0 && (
+        {mand.roomTime > 0 && mand.shortage > 0 && (
           <div className="mb-3 text-[13px] text-red-300 bg-red-500/10 border border-red-500/40 rounded-lg px-3 py-2.5">
             ⚠ 술이 <b className="text-red-200">{f1(mand.shortage)}병 부족</b>합니다. <span className="text-red-300/70">(의무 {f1(mand.req)}병 · 현재 {mand.bottles}병)</span>
           </div>
@@ -383,7 +468,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
             </div>
           </div>
           <div className="mb-3">{priceRow("여 도우미", "text-pink-300", "tcOn", "tcOff", "ban", "chabi")}</div>
-          <div className="space-y-2">{renderHelpers(s.helpers, "helpers", s.tcOn, s.tcOff, s.ban, s.chabi)}</div>
+          <div className="space-y-2">{renderHelpers(s.helpers, "helpers", s.tcOn, s.tcOff, s.ban, s.chabi, comp.onF)}</div>
           <button onClick={() => set({ helpers: [...s.helpers, { id: Date.now(), name: "", start: "", end: null, manual: null, wing: false, nom: false, line: 0 }] })} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 도우미 추가</button>
           <div className="text-right mt-2 text-sm"><span className="text-zinc-500">티씨 합계 </span><span className="font-semibold text-zinc-100">{won(tcTotal)}</span></div>
         </div>
@@ -392,7 +477,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
         {s.guestMode === "아베크" && (
           <div className={card + " mb-3"}>
             <div className="mb-3">{priceRow("선수(남)", "text-sky-300", "mTcOn", "mTcOff", "mBan", "mChabi")}</div>
-            <div className="space-y-2">{renderHelpers(s.mHelpers, "mHelpers", s.mTcOn, s.mTcOff, s.mBan, s.mChabi)}</div>
+            <div className="space-y-2">{renderHelpers(s.mHelpers, "mHelpers", s.mTcOn, s.mTcOff, s.mBan, s.mChabi, comp.onM)}</div>
             <button onClick={() => set({ mHelpers: [...s.mHelpers, { id: Date.now(), name: "", start: "", end: null, manual: null, wing: false, nom: false, line: 0 }] })} className="w-full mt-2 flex items-center justify-center gap-1 text-xs text-zinc-400 border border-dashed border-zinc-700 rounded-lg py-2"><Plus size={13} /> 선수 추가</button>
             <div className="text-right mt-2 text-sm"><span className="text-zinc-500">선수 합계 </span><span className="font-semibold text-zinc-100">{won(mTcTotal)}</span></div>
           </div>
@@ -439,29 +524,132 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
   );
 }
 
+// 완료 시 남길 손님 방문 이력 레코드
+const makeGuestRec = (s) => {
+  const avec = s.guestMode === "아베크";
+  const comp = computeSheet(s, Date.now());
+  const mk = (hs, grp, map) => hs
+    .filter((h) => (h.name || "").trim() || effTime(h, Date.now()) > 0)
+    .map((h) => ({ name: (h.name || "").trim() || "(이름없음)", time: effTime(h, Date.now()), line: (h.line || 0), wing: !!h.wing, nom: !!h.nom, on: comp.effOn(h, map), grp }));
+  const managers = [...mk(s.helpers, "여", comp.onF), ...(avec ? mk(s.mHelpers, "남", comp.onM) : [])];
+  return {
+    sheetId: s.id, guest: (s.guest || "").trim(), date: s.date, part: s.part,
+    numGuest: s.numGuest, guestMode: s.guestMode, total: comp.total,
+    bottles: s.drinks.reduce((a, d) => a + (Number(d.bottles) || 0), 0), managers, ts: Date.now(),
+  };
+};
+
+function GuestSearch({ guests, onBack }) {
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(null);
+  const named = guests.filter((g) => g.guest);
+  const query = q.trim();
+
+  if (sel) {
+    const visits = named.filter((g) => g.guest === sel).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const mgrCount = {};
+    visits.forEach((v) => (v.managers || []).forEach((m) => { if (m.name && m.name !== "(이름없음)") mgrCount[m.name] = (mgrCount[m.name] || 0) + 1; }));
+    const ranking = Object.entries(mgrCount).sort((a, b) => b[1] - a[1]);
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-200" style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif"}}>
+        <div className="max-w-md mx-auto px-4 py-6 pb-28">
+          <button onClick={() => setSel(null)} className="flex items-center gap-1 text-sm text-zinc-400 active:text-zinc-200 mb-3"><Back size={16} /> 손님 목록</button>
+          <h1 className="text-2xl font-bold tracking-tight text-amber-400 mb-1">{sel}</h1>
+          <p className="text-xs text-zinc-500 mb-4">방문 {visits.length}회 · 최근 {visits[0] ? visits[0].date : "-"}</p>
+          {ranking.length > 0 && (
+            <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-3 mb-4">
+              <div className="text-sm font-medium text-zinc-100 mb-2">자주 앉힌 매니저</div>
+              <div className="space-y-1">{ranking.map(([nm, c], i) => (<div key={i} className="flex items-center justify-between text-sm"><span className="text-zinc-300">{i + 1}. {nm}</span><span className="text-zinc-500">{c}회</span></div>))}</div>
+            </div>
+          )}
+          <div className="space-y-2">
+            {visits.map((v, i) => (
+              <div key={i} className="bg-zinc-900/60 border border-zinc-800 rounded-xl px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-zinc-100"><span className={"font-semibold " + dateColor(v.date)}>{v.date || "?"}</span> <span className="text-[10px] text-zinc-500">{v.guestMode} {v.numGuest} · {v.part}</span></span>
+                  <span className="text-amber-400 font-semibold">{won(v.total)}</span>
+                </div>
+                <div className="mt-1 text-[12px] text-zinc-400">{(v.managers || []).map((m, j) => `${m.name}${m.wing ? "(날개)" : ""} ${f1(m.time)}타임`).join(" · ") || "매니저 기록 없음"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const seen = {};
+  const people = [];
+  named.slice().sort((a, b) => (b.ts || 0) - (a.ts || 0)).forEach((g) => {
+    if (query && !g.guest.includes(query)) return;
+    if (!seen[g.guest]) { seen[g.guest] = true; people.push(g); }
+  });
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-200" style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif"}}>
+      <div className="max-w-md mx-auto px-4 py-6 pb-28">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm text-zinc-400 active:text-zinc-200 mb-3"><Back size={16} /> 계산서</button>
+        <h1 className="text-2xl font-bold tracking-tight text-amber-400 mb-3">손님 조회</h1>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="손님 이름 검색" className="w-full mb-4 bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-amber-500 placeholder:text-zinc-600" />
+        {people.length === 0 ? (
+          <p className="text-center text-sm text-zinc-600 mt-10">{named.length === 0 ? "완료한 계산서가 쌓이면 여기에 손님 이력이 생겨요." : "검색 결과가 없어요."}</p>
+        ) : (
+          <div className="space-y-2">
+            {people.map((g, i) => {
+              const cnt = named.filter((x) => x.guest === g.guest).length;
+              return (
+                <button key={i} onClick={() => setSel(g.guest)} className="w-full text-left bg-zinc-900/60 border border-zinc-800 rounded-xl px-4 py-3 active:bg-zinc-800">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-zinc-100 font-semibold">{g.guest} <span className="text-[10px] text-zinc-500 font-normal">{cnt}회</span></span>
+                    <span className="text-amber-400 font-semibold">{won(g.total)}</span>
+                  </div>
+                  <div className="mt-1 text-[12px] text-zinc-400"><span className={dateColor(g.date)}>{g.date || "?"}</span> · {g.guestMode} {g.numGuest} · {(g.managers || []).map((m) => m.name).filter((x) => x && x !== "(이름없음)").join(", ") || "매니저 미기록"}</div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [sheets, setSheets] = useState(() => load("calcSheets", []));
   const [savedDrinks, setSavedDrinks] = useState(() => load("calcDrinks", []));
   const [prices, setPrices] = useState(() => defaultPrices());
+  const [guests, setGuests] = useState(() => load("calcGuests", []));
   const [openId, setOpenId] = useState(null);
   const [tab, setTab] = useState("ing");
+  const [showGuests, setShowGuests] = useState(false);
 
   useEffect(() => { save("calcSheets", sheets); }, [sheets]);
   useEffect(() => { save("calcDrinks", savedDrinks); }, [savedDrinks]);
   useEffect(() => { save("calcPrices", prices); }, [prices]);
+  useEffect(() => { save("calcGuests", guests); }, [guests]);
 
   const open = sheets.find((s) => s.id === openId);
   const updateSheet = (ns) => setSheets((arr) => arr.map((s) => (s.id === ns.id ? ns : s)));
   const create = () => { const ns = newSheet(prices); setSheets((a) => [ns, ...a]); setOpenId(ns.id); };
-  const toggleDone = (id) => setSheets((a) => a.map((s) => (s.id === id ? { ...s, done: !s.done } : s)));
-  const del = (id) => { setSheets((a) => a.filter((s) => s.id !== id)); setOpenId(null); };
+  const toggleDone = (id) => {
+    const cur = sheets.find((x) => x.id === id); if (!cur) return;
+    const nd = !cur.done;
+    setSheets((a) => a.map((s) => (s.id === id ? { ...s, done: nd } : s)));
+    if (nd) { const rec = makeGuestRec(cur); setGuests((g) => [rec, ...g.filter((x) => x.sheetId !== id)]); }
+    else setGuests((g) => g.filter((x) => x.sheetId !== id));
+  };
+  const del = (id) => { setSheets((a) => a.filter((s) => s.id !== id)); setGuests((g) => g.filter((x) => x.sheetId !== id)); setOpenId(null); };
   const setDefaultPrice = (field, val) => setPrices((p) => ({ ...p, [field]: val }));
+
+  // 자동완성용 손님 이름 (시트 + 이력, 중복 제거)
+  const guestNames = Array.from(new Set([...sheets.map((s) => (s.guest || "").trim()), ...guests.map((g) => (g.guest || "").trim())].filter(Boolean)));
 
   if (open) {
     return <CalcSheet sheet={open} onChange={updateSheet} onBack={() => setOpenId(null)}
       onToggleDone={() => toggleDone(open.id)} onDelete={() => { if (confirm("이 계산서를 삭제할까요?")) del(open.id); }}
-      savedDrinks={savedDrinks} setSavedDrinks={setSavedDrinks} setDefaultPrice={setDefaultPrice} />;
+      savedDrinks={savedDrinks} setSavedDrinks={setSavedDrinks} setDefaultPrice={setDefaultPrice} guestNames={guestNames} />;
   }
+
+  if (showGuests) return <GuestSearch guests={guests} onBack={() => setShowGuests(false)} />;
 
   const list = sheets.filter((s) => (tab === "done" ? s.done : !s.done));
   return (
@@ -475,7 +663,10 @@ function App() {
           <button onClick={() => setTab("done")} className={"flex-1 py-2 text-sm " + (tab === "done" ? "bg-amber-500 text-zinc-950 font-semibold" : "text-zinc-400")}>완료 ({sheets.filter((s) => s.done).length})</button>
         </div>
 
-        <button onClick={create} className="w-full mb-4 flex items-center justify-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-xl py-3 text-sm text-zinc-100 active:bg-zinc-700"><Plus size={16} /> 새 계산서</button>
+        <div className="flex gap-2 mb-4">
+          <button onClick={create} className="flex-1 flex items-center justify-center gap-1.5 bg-zinc-800 border border-zinc-700 rounded-xl py-3 text-sm text-zinc-100 active:bg-zinc-700"><Plus size={16} /> 새 계산서</button>
+          <button onClick={() => setShowGuests(true)} className="flex items-center justify-center gap-1.5 bg-zinc-900 border border-zinc-700 rounded-xl py-3 px-4 text-sm text-zinc-300 active:bg-zinc-800"><Users size={15} /> 손님 조회</button>
+        </div>
 
         {list.length === 0 ? (
           <p className="text-center text-sm text-zinc-600 mt-10">{tab === "ing" ? "진행 중인 계산서가 없어요. '새 계산서'로 시작하세요." : "완료된 계산서가 없어요."}</p>
