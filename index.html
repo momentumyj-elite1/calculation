@@ -81,7 +81,7 @@ const newSheet = (prices) => ({
   id: "s" + Date.now() + Math.floor(Math.random() * 1000),
   date: bizDate(), room: "", guest: "", waiter: "", part: "1부", done: false, ts: Date.now(),
   guestMode: "남", numGuest: 1,
-  drinks: [{ id: 1, name: "", bottles: 1, price: "" }],
+  drinks: [{ id: 1, name: "", bottles: 1, price: "", times: [Date.now()] }],
   tcOn: prices.tcOn, tcOff: prices.tcOff, ban: prices.ban, chabi: prices.chabi,
   mTcOn: prices.mTcOn, mTcOff: prices.mTcOff, mBan: prices.mBan, mChabi: prices.mChabi,
   splitMode: "bottle",
@@ -174,16 +174,34 @@ const mainAt = (hs, line, t, n, nowMs) => {
   });
 };
 // 술적용 배정: k번째 병이 들어가는 방경과 지점(스타트 1타임 → 추가 4·8·12…), 그 시각 각 라인 메인에게 1씩.
-const onMark = (k, startB) => (k <= startB ? 1 : 4 * (k - startB)); // 타임 단위
-const assignOn = (hs, s, onB, seg, nowMs) => {
+// 특정 클록 시각 t 의 라인 메인 (진행중 도우미는 현재까지 있는 것으로 봄 — 주문 시점 귀속용)
+const mainAtClock = (hs, line, t, n, nowMs) => {
+  const inL = hs.filter((h) => {
+    if (Math.min(h.line || 0, n - 1) !== line || !h.start) return false;
+    const sMs = startMs(parseStart(h.start), nowMs);
+    if (sMs == null || sMs > t) return false;
+    const eMs = h.end != null ? h.end : (nowMs + 1); // 진행중이면 현재까지 포함
+    return t < eMs;
+  });
+  if (!inL.length) return null;
+  const nonW = inL.filter((h) => !h.wing);
+  const pool = nonW.length ? nonW : inL;
+  return pool.reduce((best, h) => (startMs(parseStart(h.start), nowMs) > startMs(parseStart(best.start), nowMs) ? h : best));
+};
+// 술적용 배정: 병마다 "주문된 시각(d.times[i])"의 각 라인 메인에게 술O 1타임씩. 날개 제외, 라인 무관 메인 전원.
+// times 가 없으면(과거 시트/즉시입력 아님) 현재 시각으로 귀속 → 현재 메인에게.
+const assignOn = (hs, s, nowMs) => {
   const n = Math.max(1, s.numGuest);
-  const startB = n <= 4 ? 1 : 2;
   const res = {}; hs.forEach((h) => { res[h.id] = 0; });
-  for (let k = 1; k <= onB; k++) {
-    const t = coveredToClock(seg, onMark(k, startB) * 60);
-    if (t == null) continue;
-    for (let line = 0; line < n; line++) { const m = mainAt(hs, line, t, n, nowMs); if (m) res[m.id] += 1; }
-  }
+  s.drinks.forEach((d) => {
+    if ((Number(d.price) || 0) < 5) return; // 단가 5만 미만은 술적용 제외
+    const cnt = Number(d.bottles) || 0;
+    const times = Array.isArray(d.times) ? d.times : [];
+    for (let i = 0; i < cnt; i++) {
+      const t = (times[i] != null) ? times[i] : nowMs;
+      for (let line = 0; line < n; line++) { const m = mainAtClock(hs, line, t, n, nowMs); if (m) res[m.id] += 1; }
+    }
+  });
   return res;
 };
 
@@ -204,11 +222,10 @@ const computeSheet = (s, nowMs) => {
   const onB = s.drinks.reduce((a, d) => a + ((Number(d.price) || 0) >= 5 ? (Number(d.bottles) || 0) : 0), 0);
   const liquor = s.drinks.reduce((a, d) => a + (Number(d.bottles) || 0) * (Number(d.price) || 0), 0);
   const avec = s.guestMode === "아베크";
-  const all = [...s.helpers, ...(avec ? s.mHelpers : [])];
-  const { seg } = roomSegments(all, nowMs);
-  const onF = assignOn(s.helpers, s, onB, seg, nowMs);
-  const onM = avec ? assignOn(s.mHelpers, s, onB, seg, nowMs) : {};
-  const effOn = (h, map) => (h.wing ? 0 : ((h.onAdj != null && h.onAdj !== "") ? Math.max(0, Number(h.onAdj) || 0) : (map[h.id] || 0)));
+  const onF = assignOn(s.helpers, s, nowMs);
+  const onM = avec ? assignOn(s.mHelpers, s, nowMs) : {};
+  // 술적용 = 수동보정값 우선, 없으면 배정값. (날개 제외는 assignOn 에서 처리 — 날개가 메인이 되면 배정되므로 여기서 0 강제하지 않음)
+  const effOn = (h, map) => ((h.onAdj != null && h.onAdj !== "") ? Math.max(0, Number(h.onAdj) || 0) : (map[h.id] || 0));
   const amt = (h, map, onP, offP, banP, chabiP) => calcTcAmt(h, effTime(h, nowMs), effOn(h, map), s.splitMode, onP, offP, banP, chabiP).amt;
   const tcTotal = s.helpers.reduce((a, h) => a + amt(h, onF, s.tcOn, s.tcOff, s.ban, s.chabi), 0);
   const mTcTotal = avec ? s.mHelpers.reduce((a, h) => a + amt(h, onM, s.mTcOn, s.mTcOff, s.mBan, s.mChabi), 0) : 0;
@@ -253,12 +270,21 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
   const liquorAmt = s.drinks.reduce((a, d) => a + (Number(d.bottles) || 0) * (Number(d.price) || 0), 0);
 
   const upD = (id, p) => set({ drinks: s.drinks.map((d) => (d.id === id ? { ...d, ...p } : d)) });
-  const addD = () => set({ drinks: [...s.drinks, { id: Date.now(), name: "", bottles: 1, price: "" }] });
+  const addD = () => set({ drinks: [...s.drinks, { id: Date.now(), name: "", bottles: 1, price: "", times: [Date.now()] }] });
   const rmD = (id) => set({ drinks: s.drinks.length > 1 ? s.drinks.filter((d) => d.id !== id) : s.drinks });
-  const setDBottles = (id, cur) => (fn) => upD(id, { bottles: typeof fn === "function" ? fn(Number(cur) || 0) : fn });
+  const setDBottles = (id, cur) => (fn) => {
+    const d = s.drinks.find((x) => x.id === id); if (!d) return;
+    const prev = Number(cur) || 0;
+    const next = Math.max(0, typeof fn === "function" ? fn(prev) : (Number(fn) || 0));
+    let times = Array.isArray(d.times) ? d.times.slice() : [];
+    while (times.length < prev) times.push(null);        // 과거 미기록분은 null (배정 시 현재로 처리)
+    if (next > times.length) { for (let i = times.length; i < next; i++) times.push(Date.now()); } // 늘린 병 = 지금 주문
+    else times = times.slice(0, next);
+    upD(id, { bottles: next, times });
+  };
   const isSaved = (name) => savedDrinks.some((x) => x.name === (name || "").trim());
   const toggleSave = (d) => { const nm = (d.name || "").trim(); if (!nm) return; setSavedDrinks(isSaved(nm) ? savedDrinks.filter((x) => x.name !== nm) : [...savedDrinks, { name: nm, price: d.price }]); };
-  const useSaved = (sd) => { const i = s.drinks.findIndex((d) => !d.name && !Number(d.price)); if (i >= 0) { const c = [...s.drinks]; c[i] = { ...c[i], name: sd.name, price: sd.price }; set({ drinks: c }); } else set({ drinks: [...s.drinks, { id: Date.now(), name: sd.name, bottles: 1, price: sd.price }] }); };
+  const useSaved = (sd) => { const i = s.drinks.findIndex((d) => !d.name && !Number(d.price)); if (i >= 0) { const c = [...s.drinks]; c[i] = { ...c[i], name: sd.name, price: sd.price }; set({ drinks: c }); } else set({ drinks: [...s.drinks, { id: Date.now(), name: sd.name, bottles: 1, price: sd.price, times: [Date.now()] }] }); };
 
   const comp = computeSheet(s, now);
   const ctc = (h, map, onP, offP, banP, chabiP) => calcTcAmt(h, effTime(h, now), comp.effOn(h, map), s.splitMode, onP, offP, banP, chabiP);
@@ -357,7 +383,7 @@ function CalcSheet({ sheet, onChange, onBack, onToggleDone, onDelete, savedDrink
             {running && <span className="text-[10px] text-emerald-400/70">자동</span>}
             {h.start && h.end && !manualOn && <span className="text-[10px] text-zinc-500">끝</span>}
             {manualOn && <span className="text-[10px] text-amber-400/70">수동</span>}
-            {!h.wing && (
+            {(!h.wing || onN > 0) && (
               <span className="ml-auto flex items-center gap-1">
                 <span className="text-[10px] text-amber-300/80">술적용</span>
                 <div className="flex items-center border border-zinc-700 rounded-lg overflow-hidden">
