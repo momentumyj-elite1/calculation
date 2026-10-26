@@ -150,9 +150,17 @@ const coveredToClock = (seg, M) => {
   return seg.length ? seg[seg.length - 1][1] - 1 : null;
 };
 // 방 경과 타임 (전원 부재 구간 제외)
+// 방 경과 타임 = 라인별 점유 구간 합집합(공백 제외, 날개 포함)을 타임 환산한 값 중 최댓값
 const roomElapsed = (s, nowMs) => {
   const all = [...s.helpers, ...(s.guestMode === "아베크" ? s.mHelpers : [])];
-  return autoTime(Math.round(roomSegments(all, nowMs).minutes));
+  const n = Math.max(1, s.numGuest);
+  let best = 0;
+  for (let i = 0; i < n; i++) {
+    const inLine = all.filter((h) => Math.min(h.line || 0, n - 1) === i);
+    const t = autoTime(Math.round(roomSegments(inLine, nowMs).minutes));
+    if (t > best) best = t;
+  }
+  return best;
 };
 // 한 라인의 현재 메인: 그 시각 라인에 있던 비-날개 중 start 가장 늦은 사람. 없으면 날개 중 가장 늦은 사람.
 const mainAt = (hs, line, t, n, nowMs) => {
