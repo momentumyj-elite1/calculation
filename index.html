@@ -118,7 +118,8 @@ const helperIv = (h, nowMs) => {
   if (!h || !h.start) return null;
   const sMs = startMs(parseStart(h.start), nowMs);
   if (sMs == null) return null;
-  const eMs = h.end || nowMs;
+  // 종료: h.end 있으면 그것, 없으면 start + effTime(타임→시간). 수동 조정값도 effTime 에 반영됨.
+  const eMs = (h.end != null) ? h.end : (sMs + effTime(h, nowMs) * 3600000);
   return eMs > sMs ? [sMs, eMs] : null;
 };
 // 특정 시각 t 에 방에 있었는지
